@@ -194,6 +194,8 @@ header.top{background:#090909;border-bottom-color:#b58a2e55}
 
 /* Mídias atuais da Polly’s Store. */
 .card__img{aspect-ratio:2/3}.card__img img{object-fit:contain;background:#e7dfd0}.story img{aspect-ratio:772/970;object-fit:contain;object-position:center}
+/* Rolagem estável do catálogo. */
+.marquee{scroll-behavior:auto;overflow-anchor:none;touch-action:pan-x pan-y pinch-zoom}.track{overflow-anchor:none}
 </style>
 </head>
 <body>
@@ -374,35 +376,104 @@ function toast(t){const d=document.createElement("div");d.className="toast";d.te
 const card=p=>`<article class="card"><div class="card__img"><img src="${esc(p.image)}" alt="${esc(p.name)}" loading="lazy" draggable="false"></div><span class="cat-n">${esc(p.category)}</span><h3>${esc(p.name)}</h3><span class="price">${brl(p.price)}</span><button class="btn btn--line add" data-add="${esc(p.id)}">Adicionar ao carrinho</button></article>`;
 
 /* carrossel: rola sozinho, pode ser arrastado (mouse) ou deslizado (toque) para qualquer lado, em loop */
+/* Carrossel contínuo: preserva os elementos e a posição durante a navegação. */
 const mq=(()=>{
   const m=$("#marquee"),t=$("#track"),reduce=matchMedia("(prefers-reduced-motion:reduce)").matches;
-  let n=0,P=0,pos=0,last=0,touching=false,hover=false,drag=false,idle=-1e9,moved=0,sx=0,sl=0,vis=true;
-  function wrap(){if(!P)return 0;let d=0;if(m.scrollLeft>=2*P)d=-P;else if(m.scrollLeft<P)d=P;if(d){m.scrollLeft+=d;pos=m.scrollLeft}return d}
-  function reset(k){n=k;requestAnimationFrame(()=>{const c=t.children;if(c.length<=n){P=0;return}P=c[n].offsetLeft-c[0].offsetLeft;m.scrollLeft=pos=P})}
-  m.addEventListener("scroll",()=>{if(Math.abs(m.scrollLeft-pos)>1.5){pos=m.scrollLeft;idle=performance.now()}wrap()},{passive:true});
-  m.addEventListener("touchstart",()=>{touching=true},{passive:true});
-  const tend=()=>{touching=false;idle=performance.now()};m.addEventListener("touchend",tend,{passive:true});m.addEventListener("touchcancel",tend,{passive:true});
+  let n=0,period=0,anchor=0,pos=0,last=0,width=0,visible=true;
+  let touching=false,pageTouch=false,hover=false,drag=false,idle=-1e9,moved=0,sx=0,sl=0;
+  let settleTimer=0,measureQueued=false,needsMeasure=false;
+  const modulo=(value,size)=>((value%size)+size)%size;
+  function normalize(){
+    if(!period||touching||pageTouch||drag)return;
+    const left=m.scrollLeft;
+    if(left>=anchor&&left<anchor+period)return;
+    // As cópias têm o mesmo conteúdo; só reposiciona depois de o gesto terminar.
+    pos=anchor+modulo(left-anchor,period);
+    m.scrollLeft=pos;pos=m.scrollLeft;
+  }
+  function measure(preserve=true){
+    if(!n||t.children.length<=n)return;
+    const phase=preserve&&period?(pos-anchor)/period:0;
+    const next=t.children[n].offsetLeft-t.children[0].offsetLeft;
+    if(next<=0)return;
+    period=next;anchor=Math.floor(t.children.length/n/2)*period;width=m.clientWidth;
+    m.scrollLeft=anchor+phase*period;pos=m.scrollLeft;needsMeasure=false;
+  }
+  function settle(){
+    clearTimeout(settleTimer);
+    settleTimer=setTimeout(()=>{
+      if(touching||pageTouch||drag||performance.now()-idle<180){settle();return}
+      if(needsMeasure)measure();
+      normalize();
+    },200);
+  }
+  function pause(){idle=performance.now();settle()}
+  function resized(){
+    // A altura muda ao recolher a barra do navegador; isso não altera o catálogo.
+    if(!n||Math.abs(m.clientWidth-width)<1)return;
+    needsMeasure=true;
+    if(touching||pageTouch||drag){settle();return}
+    if(measureQueued)return;
+    measureQueued=true;
+    requestAnimationFrame(()=>{measureQueued=false;if(!touching&&!pageTouch&&!drag){measure();normalize()}else settle()});
+  }
+  function reset(k){
+    n=k;period=0;anchor=0;clearTimeout(settleTimer);
+    requestAnimationFrame(()=>measure(false));
+  }
+  m.addEventListener("scroll",()=>{
+    if(Math.abs(m.scrollLeft-pos)>1.5){pos=m.scrollLeft;pause()}
+  },{passive:true});
+  m.addEventListener("touchstart",()=>{touching=true;pause()},{passive:true});
+  const touchEnd=()=>{touching=false;pause()};
+  m.addEventListener("touchend",touchEnd,{passive:true});m.addEventListener("touchcancel",touchEnd,{passive:true});
+  document.addEventListener("touchstart",()=>{pageTouch=true;pause()},{passive:true});
+  const pageTouchEnd=()=>{pageTouch=false;pause()};
+  document.addEventListener("touchend",pageTouchEnd,{passive:true});document.addEventListener("touchcancel",pageTouchEnd,{passive:true});
+  addEventListener("scroll",pause,{passive:true});m.addEventListener("wheel",pause,{passive:true});
   m.addEventListener("pointerenter",e=>{if(e.pointerType==="mouse")hover=true});m.addEventListener("pointerleave",()=>{hover=false});
-  m.addEventListener("pointerdown",e=>{if(e.pointerType!=="mouse"||e.button)return;drag=true;moved=0;sx=e.clientX;sl=m.scrollLeft});
-  addEventListener("pointermove",e=>{if(!drag)return;const dx=e.clientX-sx;moved=Math.max(moved,Math.abs(dx));if(moved>5)m.classList.add("drag");m.scrollLeft=sl-dx;sl+=wrap();pos=m.scrollLeft;idle=performance.now()});
-  const up=()=>{if(!drag)return;drag=false;m.classList.remove("drag");setTimeout(()=>{moved=0},0)};addEventListener("pointerup",up);addEventListener("pointercancel",up);
+  m.addEventListener("pointerdown",e=>{
+    if(e.pointerType!=="mouse"||e.button)return;
+    drag=true;moved=0;sx=e.clientX;sl=m.scrollLeft;pause();
+  });
+  addEventListener("pointermove",e=>{
+    if(!drag)return;
+    const dx=e.clientX-sx;moved=Math.max(moved,Math.abs(dx));
+    if(moved>5)m.classList.add("drag");
+    m.scrollLeft=sl-dx;pos=m.scrollLeft;pause();
+  });
+  const up=()=>{
+    if(!drag)return;
+    drag=false;m.classList.remove("drag");pause();setTimeout(()=>{moved=0},0);
+  };
+  addEventListener("pointerup",up);addEventListener("pointercancel",up);
   m.addEventListener("click",e=>{if(moved>5){e.stopPropagation();e.preventDefault()}},true);
   m.addEventListener("dragstart",e=>e.preventDefault());
-  if("IntersectionObserver"in window)new IntersectionObserver(es=>{vis=es[0].isIntersecting}).observe(m);
-  addEventListener("resize",()=>{if(n)renderTrack()});
-  function tick(t0){const dt=Math.min(.05,(t0-last)/1000||0);last=t0;
-    if(P&&vis&&!reduce&&!touching&&!hover&&!drag&&!document.hidden&&t0-idle>2200){pos+=CFG.SPEED*dt;m.scrollLeft=pos;wrap()}
-    requestAnimationFrame(tick)}
+  if("IntersectionObserver"in window)new IntersectionObserver(es=>{visible=es[0].isIntersecting}).observe(m);
+  if("ResizeObserver"in window)new ResizeObserver(resized).observe(m);
+  addEventListener("resize",resized);
+  function tick(now){
+    const dt=Math.min(.05,(now-last)/1000||0);last=now;
+    if(period&&visible&&!reduce&&!touching&&!pageTouch&&!hover&&!drag&&!document.hidden&&now-idle>2200){
+      pos+=CFG.SPEED*dt;m.scrollLeft=pos;pos=m.scrollLeft;normalize();
+    }
+    requestAnimationFrame(tick);
+  }
   requestAnimationFrame(tick);
   return{reset};
 })();
 function renderTrack(){
   const t=$("#track"),n=products.length;if(!n)return;
-  const copies=Math.max(3,2+Math.ceil(innerWidth/(n*154)));
+  const pitch=Math.max(140,Math.min(innerWidth*.4,180))+14;
+  const copies=Math.max(5,3+2*Math.ceil(innerWidth/(n*pitch)));
   t.innerHTML=products.map(card).join("").repeat(copies);
-  [...t.children].forEach((c,i)=>{if(i>=n){c.setAttribute("aria-hidden","true");c.querySelectorAll("button").forEach(b=>b.tabIndex=-1)}});
+  [...t.children].forEach((c,i)=>{
+    c.querySelectorAll("img").forEach(img=>{img.loading="eager"});
+    if(i>=n){c.setAttribute("aria-hidden","true");c.querySelectorAll("button").forEach(b=>b.tabIndex=-1)}
+  });
   mq.reset(n);
 }
+
 function renderFull(){
   const cats=[...new Set(products.map(p=>p.category).filter(Boolean))];
   $("#chips").innerHTML=["",...cats].map(c=>`<button class="chip" data-cat="${esc(c)}" aria-pressed="${c===cat}">${c||"Todos"}</button>`).join("");
